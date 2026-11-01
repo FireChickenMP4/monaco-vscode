@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>考场管理端</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      [hidden] {
+        display: none !important;
+      }
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+        background: #1e1e1e;
+        color: #ddd;
+        font-size: 13px;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 16px;
+        background: #252526;
+        border-bottom: 1px solid #3c3c3c;
+      }
+      header h1 {
+        font-size: 15px;
+        margin: 0;
+        font-weight: 500;
+      }
+      main {
+        padding: 16px;
+        display: grid;
+        gap: 16px;
+        grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr);
+      }
+      section {
+        background: #252526;
+        border: 1px solid #3c3c3c;
+        border-radius: 6px;
+        padding: 12px;
+      }
+      section h2 {
+        font-size: 13px;
+        margin: 0 0 10px;
+        font-weight: 600;
+        color: #ccc;
+      }
+      input,
+      button,
+      select {
+        background: #3c3c3c;
+        color: #eee;
+        border: 1px solid #555;
+        border-radius: 4px;
+        padding: 4px 8px;
+        font-size: 12px;
+        font-family: inherit;
+      }
+      button {
+        cursor: pointer;
+      }
+      button:hover {
+        background: #4a4a4a;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 4px 6px;
+        border-bottom: 1px solid #333;
+        white-space: nowrap;
+      }
+      th {
+        color: #999;
+        font-weight: 500;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+        margin-bottom: 8px;
+      }
+      .grow {
+        flex: 1;
+      }
+      .muted {
+        color: #888;
+      }
+      .error {
+        color: #f48771;
+      }
+      .ok {
+        color: #89d185;
+      }
+      pre {
+        background: #1b1b1b;
+        border: 1px solid #333;
+        border-radius: 4px;
+        padding: 8px;
+        max-height: 240px;
+        overflow: auto;
+        font-size: 11px;
+      }
+      #login {
+        max-width: 360px;
+        margin: 12vh auto;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>考场管理端</h1>
+      <span id="who" class="muted"></span>
+      <span class="grow"></span>
+      <button id="logout" hidden>退出</button>
+    </header>
+
+    <section id="login">
+      <h2>管理员登录</h2>
+      <div class="row">
+        <input id="admin-token" type="password" placeholder="管理端令牌" class="grow" />
+        <button id="login-btn">登录</button>
+      </div>
+      <p id="login-error" class="error"></p>
+    </section>
+
+    <main id="app" hidden>
+      <section>
+        <h2>考生</h2>
+        <div class="row">
+          <input id="new-no" placeholder="学号" />
+          <input id="new-name" placeholder="姓名" />
+          <button id="create-btn">新建</button>
+        </div>
+        <pre id="create-result" hidden></pre>
+        <table>
+          <thead>
+            <tr><th>学号</th><th>姓名</th><th>状态</th><th>操作</th></tr>
+          </thead>
+          <tbody id="students"></tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>快照</h2>
+        <div class="row">
+          <input id="snap-student" placeholder="学号" />
+          <button id="snap-load">查询</button>
+        </div>
+        <table>
+          <thead>
+            <tr><th>版本</th><th>时间</th><th>文件数</th><th>操作</th></tr>
+          </thead>
+          <tbody id="snapshots"></tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>判题</h2>
+        <div class="row">
+          <input id="judge-student" placeholder="学号" />
+          <input id="judge-problem" placeholder="题目 ID" />
+          <button id="judge-submit">提交判题</button>
+          <button id="judge-load">刷新记录</button>
+        </div>
+        <pre id="judge-result" hidden></pre>
+        <table>
+          <thead>
+            <tr><th>时间</th><th>学号</th><th>题目</th><th>状态</th><th>得分</th></tr>
+          </thead>
+          <tbody id="judge-runs"></tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>审计</h2>
+        <div class="row">
+          <input id="audit-student" placeholder="学号（留空为全部）" />
+          <button id="audit-load">查询</button>
+        </div>
+        <table>
+          <thead>
+            <tr><th>时间</th><th>学号</th><th>动作</th><th>路径</th><th>状态</th></tr>
+          </thead>
+          <tbody id="audit"></tbody>
+        </table>
+      </section>
+    </main>
+
+    <script>
+      const $ = (id) => document.getElementById(id)
+
+      async function api(path, options = {}) {
+        const res = await fetch(path, {
+          credentials: 'same-origin',
+          headers: options.body ? { 'Content-Type': 'application/json' } : {},
+          ...options
+        })
+        if (!res.ok) {
+          let message = res.statusText
+          try {
+            const body = await res.json()
+            message = body.error || message
+          } catch {}
+          throw new Error(`${res.status} ${message}`)
+        }
+        if (res.status === 204) return null
+        return await res.json()
+      }
+
+      function row(cells) {
+        const tr = document.createElement('tr')
+        for (const cell of cells) {
+          const td = document.createElement('td')
+          if (cell instanceof Node) td.appendChild(cell)
+          else td.textContent = cell == null ? '' : String(cell)
+          tr.appendChild(td)
+        }
+        return tr
+      }
+
+      function button(label, onClick) {
+        const btn = document.createElement('button')
+        btn.textContent = label
+        btn.addEventListener('click', onClick)
+        return btn
+      }
+
+      function fmtTime(value) {
+        if (!value) return ''
+        const d = new Date(value)
+        return isNaN(d) ? '' : d.toLocaleString()
+      }
+
+      async function loadStudents() {
+        const body = await api('/api/admin/students')
+        const tbody = $('students')
+        tbody.replaceChildren()
+        for (const s of body.students || []) {
+          tbody.appendChild(
+            row([
+              s.student_no,
+              s.name,
+              s.disabled ? '停用' : '正常',
+              (() => {
+                const wrap = document.createElement('span')
+                wrap.appendChild(
+                  button('重置令牌', async () => {
+                    const out = await api('/api/admin/students/reset-token', {
+                      method: 'POST',
+                      body: JSON.stringify({ student_no: s.student_no })
+                    })
+                    $('create-result').hidden = false
+                    $('create-result').textContent = `${s.student_no} 新令牌：${out.token}`
+                  })
+                )
+                wrap.appendChild(document.createTextNode(' '))
+                wrap.appendChild(
+                  button(s.disabled ? '启用' : '停用', async () => {
+                    await api('/api/admin/students/disable', {
+                      method: 'POST',
+                      body: JSON.stringify({ student_no: s.student_no, disabled: !s.disabled })
+                    })
+                    await loadStudents()
+                  })
+                )
+                return wrap
+              })()
+            ])
+          )
+        }
+      }
+
+      async function loadSnapshots() {
+        const student = $('snap-student').value.trim()
+        if (!student) return
+        const body = await api(`/api/admin/snapshots?student=${encodeURIComponent(student)}`)
+        const tbody = $('snapshots')
+        tbody.replaceChildren()
+        for (const s of body.snapshots || []) {
+          tbody.appendChild(
+            row([
+              `v${s.version}`,
+              fmtTime(s.created_at),
+              s.files,
+              button('回放到工作区', async () => {
+                if (!confirm(`用 ${student} 的 v${s.version} 覆盖当前工作区？`)) return
+                await api('/api/admin/snapshots/restore', {
+                  method: 'POST',
+                  body: JSON.stringify({ student_no: student, version: s.version })
+                })
+                alert('已回放')
+              })
+            ])
+          )
+        }
+        if (!body.snapshots?.length) {
+          tbody.appendChild(row(['', '暂无快照', '', '']))
+        }
+      }
+
+      async function loadJudgeRuns() {
+        const student = $('judge-student').value.trim()
+        const body = await api(`/api/admin/judge/runs${student ? `?student=${encodeURIComponent(student)}` : ''}`)
+        const tbody = $('judge-runs')
+        tbody.replaceChildren()
+        for (const r of body.runs || []) {
+          tbody.appendChild(row([fmtTime(r.created_at), r.student_no, r.problem, r.status, `${r.score}/${r.total}`]))
+        }
+        if (!body.runs?.length) tbody.appendChild(row(['', '', '暂无记录', '', '']))
+      }
+
+      async function loadAudit() {
+        const student = $('audit-student').value.trim()
+        const body = await api(`/api/admin/audit?limit=200${student ? `&student=${encodeURIComponent(student)}` : ''}`)
+        const tbody = $('audit')
+        tbody.replaceChildren()
+        for (const a of body.audit || []) {
+          tbody.appendChild(row([fmtTime(a.at), a.student_no, a.action, a.path, a.status]))
+        }
+        if (!body.audit?.length) tbody.appendChild(row(['', '', '暂无记录', '', '']))
+      }
+
+      function showApp(loggedIn) {
+        $('login').hidden = loggedIn
+        $('app').hidden = !loggedIn
+        $('logout').hidden = !loggedIn
+        $('who').textContent = loggedIn ? '已登录' : ''
+      }
+
+      $('login-btn').addEventListener('click', async () => {
+        $('login-error').textContent = ''
+        try {
+          await api('/api/admin/login', {
+            method: 'POST',
+            body: JSON.stringify({ token: $('admin-token').value })
+          })
+          showApp(true)
+          await Promise.all([loadStudents(), loadJudgeRuns()])
+        } catch (err) {
+          $('login-error').textContent = err.message
+        }
+      })
+
+      $('logout').addEventListener('click', async () => {
+        await api('/api/admin/logout', { method: 'POST' })
+        showApp(false)
+      })
+
+      $('create-btn').addEventListener('click', async () => {
+        $('create-result').hidden = false
+        try {
+          const out = await api('/api/admin/students', {
+            method: 'POST',
+            body: JSON.stringify({ student_no: $('new-no').value.trim(), name: $('new-name').value.trim() })
+          })
+          $('create-result').textContent = `${out.student_no} 的登录令牌：${out.token}`
+          await loadStudents()
+        } catch (err) {
+          $('create-result').textContent = err.message
+        }
+      })
+
+      $('snap-load').addEventListener('click', () => loadSnapshots().catch((e) => alert(e.message)))
+      $('audit-load').addEventListener('click', () => loadAudit().catch((e) => alert(e.message)))
+      $('judge-load').addEventListener('click', () => loadJudgeRuns().catch((e) => alert(e.message)))
+      $('judge-submit').addEventListener('click', async () => {
+        $('judge-result').hidden = false
+        try {
+          const out = await api('/api/admin/judge', {
+            method: 'POST',
+            body: JSON.stringify({
+              student_no: $('judge-student').value.trim(),
+              problem: $('judge-problem').value.trim()
+            })
+          })
+          $('judge-result').textContent = JSON.stringify(out, null, 2)
+          await loadJudgeRuns()
+        } catch (err) {
+          $('judge-result').textContent = err.message
+        }
+      })
+
+      // 已登录则直接进入
+      api('/api/admin/session')
+        .then((body) => {
+          if (!body.authenticated) return showApp(false)
+          showApp(true)
+          return Promise.all([loadStudents(), loadJudgeRuns()])
+        })
+        .catch(() => showApp(false))
+    </script>
+  </body>
+</html>

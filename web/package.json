@@ -1,0 +1,52 @@
+{
+  "name": "exam-workbench",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Browser VS Code workbench (monaco-vscode-api) backed by the examd file API",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@codingame/monaco-vscode-api": "38.0.7",
+    "@codingame/monaco-vscode-base-service-override": "38.0.7",
+    "@codingame/monaco-vscode-bulk-edit-service-override": "38.0.7",
+    "@codingame/monaco-vscode-configuration-service-override": "38.0.7",
+    "@codingame/monaco-vscode-dialogs-service-override": "38.0.7",
+    "@codingame/monaco-vscode-environment-service-override": "38.0.7",
+    "@codingame/monaco-vscode-explorer-service-override": "38.0.7",
+    "@codingame/monaco-vscode-extension-api": "38.0.7",
+    "@codingame/monaco-vscode-extensions-service-override": "38.0.7",
+    "@codingame/monaco-vscode-files-service-override": "38.0.7",
+    "@codingame/monaco-vscode-go-default-extension": "38.0.7",
+    "@codingame/monaco-vscode-keybindings-service-override": "38.0.7",
+    "@codingame/monaco-vscode-languages-service-override": "38.0.7",
+    "@codingame/monaco-vscode-lifecycle-service-override": "38.0.7",
+    "@codingame/monaco-vscode-localization-service-override": "38.0.7",
+    "@codingame/monaco-vscode-log-service-override": "38.0.7",
+    "@codingame/monaco-vscode-model-service-override": "38.0.7",
+    "@codingame/monaco-vscode-notifications-service-override": "38.0.7",
+    "@codingame/monaco-vscode-preferences-service-override": "38.0.7",
+    "@codingame/monaco-vscode-quickaccess-service-override": "38.0.7",
+    "@codingame/monaco-vscode-search-service-override": "38.0.7",
+    "@codingame/monaco-vscode-storage-service-override": "38.0.7",
+    "@codingame/monaco-vscode-textmate-service-override": "38.0.7",
+    "@codingame/monaco-vscode-theme-defaults-default-extension": "^38.0.7",
+    "@codingame/monaco-vscode-theme-service-override": "38.0.7",
+    "@codingame/monaco-vscode-theme-seti-default-extension": "^38.0.7",
+    "@codingame/monaco-vscode-view-banner-service-override": "38.0.7",
+    "@codingame/monaco-vscode-view-status-bar-service-override": "38.0.7",
+    "@codingame/monaco-vscode-view-title-bar-service-override": "38.0.7",
+    "@codingame/monaco-vscode-workbench-service-override": "38.0.7",
+    "@codingame/monaco-vscode-working-copy-service-override": "38.0.7",
+    "monaco-editor": "npm:@codingame/monaco-vscode-editor-api@38.0.7",
+    "vscode": "npm:@codingame/monaco-vscode-extension-api@38.0.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^5.9.0",
+    "vite": "^8.0.0"
+  }
+}

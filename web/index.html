@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>考场工作台</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+        font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC',
+          'Source Han Sans SC', sans-serif;
+        background: #1e1e1e;
+        color: #ddd;
+      }
+      [hidden] {
+        display: none !important;
+      }
+      /* 顶部状态条独立占一行，避免盖住 workbench 的标题栏按钮。 */
+      #exam-topbar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 26px;
+        z-index: 20;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 0 10px;
+        font-size: 12px;
+        line-height: 26px;
+        background: #252526;
+        color: #ccc;
+        border-bottom: 1px solid #3c3c3c;
+        user-select: none;
+      }
+      #exam-topbar .spacer {
+        flex: 1;
+      }
+      #exam-user {
+        color: #e8e8e8;
+        white-space: nowrap;
+      }
+      #exam-status {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 60vw;
+      }
+      #exam-status::before {
+        content: '';
+        display: inline-block;
+        width: 7px;
+        height: 7px;
+        margin-right: 6px;
+        border-radius: 50%;
+        background: #3fb950;
+        vertical-align: 1px;
+      }
+      #exam-status[data-kind='busy']::before {
+        background: #d29922;
+      }
+      #exam-status[data-kind='warn'] {
+        color: #e3b341;
+      }
+      #exam-status[data-kind='warn']::before {
+        background: #d29922;
+      }
+      #exam-status[data-kind='error'] {
+        color: #f85149;
+      }
+      #exam-status[data-kind='error']::before {
+        background: #f85149;
+      }
+      #exam-logout {
+        background: #333;
+        color: #ddd;
+        border: 1px solid #555;
+        border-radius: 4px;
+        padding: 0 10px;
+        height: 20px;
+        cursor: pointer;
+        font-size: 12px;
+      }
+      #exam-logout:hover {
+        background: #3c3c3c;
+      }
+      #workbench {
+        position: absolute;
+        top: 26px;
+        left: 0;
+        right: 0;
+        bottom: 0;
+      }
+      #exam-login {
+        position: fixed;
+        inset: 0;
+        z-index: 100;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #1e1e1e;
+      }
+      #exam-login form {
+        width: 320px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: 28px;
+        background: #252526;
+        border: 1px solid #3c3c3c;
+        border-radius: 8px;
+      }
+      #exam-login h1 {
+        font-size: 18px;
+        margin: 0 0 8px;
+        font-weight: 500;
+      }
+      #exam-login label {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 13px;
+        color: #bbb;
+      }
+      #exam-login input {
+        background: #3c3c3c;
+        border: 1px solid #555;
+        color: #eee;
+        border-radius: 4px;
+        padding: 6px 8px;
+        font-size: 14px;
+      }
+      #exam-login button {
+        background: #0e639c;
+        border: none;
+        color: #fff;
+        border-radius: 4px;
+        padding: 8px;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      #exam-login button:hover {
+        background: #1177bb;
+      }
+      .exam-error {
+        color: #f48771;
+        font-size: 12px;
+        margin: 0;
+        min-height: 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="exam-topbar" hidden>
+      <span id="exam-user"></span>
+      <span id="exam-status" data-kind="busy">正在加载...</span>
+      <span class="spacer"></span>
+      <button id="exam-logout" type="button">退出</button>
+    </div>
+    <div id="workbench"></div>
+    <div id="exam-login" hidden></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
