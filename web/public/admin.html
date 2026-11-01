@@ -373,15 +373,30 @@
 
       $('snap-load').addEventListener('click', () => loadSnapshots().catch((e) => alert(e.message)))
       $('audit-load').addEventListener('click', () => loadAudit().catch((e) => alert(e.message)))
-      $('audit-export').addEventListener('click', () => {
+      $('audit-export').addEventListener('click', async () => {
         const student = $('audit-student').value.trim()
         const query = student ? `?student=${encodeURIComponent(student)}` : ''
-        const link = document.createElement('a')
-        link.href = `/api/admin/audit.csv${query}`
-        link.download = 'audit.csv'
-        document.body.appendChild(link)
-        link.click()
-        link.remove()
+        try {
+          const res = await fetch(`/api/admin/audit.csv${query}`, { credentials: 'same-origin' })
+          if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+          const rows = res.headers.get('X-Row-Count') ?? '?'
+          const truncated = res.headers.get('X-Truncated') === 'true'
+          const blob = await res.blob()
+          // 响应头在下载时看不到，这里先提示再保存。
+          if (truncated) {
+            alert(`已导出最近 ${rows} 条记录；更早的记录未包含，如需全量请按学号分批导出。`)
+          }
+          const url = URL.createObjectURL(blob)
+          const link = document.createElement('a')
+          link.href = url
+          link.download = 'audit.csv'
+          document.body.appendChild(link)
+          link.click()
+          link.remove()
+          setTimeout(() => URL.revokeObjectURL(url), 1000)
+        } catch (err) {
+          alert(`导出失败：${err.message}`)
+        }
       })
       $('judge-load').addEventListener('click', () => loadJudgeRuns().catch((e) => alert(e.message)))
       $('judge-submit').addEventListener('click', async () => {

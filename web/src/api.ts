@@ -77,11 +77,6 @@ export const api = {
       | { authenticated: true; student_no: string; name: string }
   },
 
-  async me(): Promise<{ student_no: string; name: string; workspace: string }> {
-    const res = await request('/api/me')
-    return (await res.json()) as { student_no: string; name: string; workspace: string }
-  },
-
   async login(studentNo: string, token: string): Promise<void> {
     await request('/api/login', {
       method: 'POST',

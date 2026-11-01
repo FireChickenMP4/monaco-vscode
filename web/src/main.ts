@@ -104,10 +104,14 @@ function showLogin(message?: string): Promise<{ student_no: string; name: string
       let left = Math.max(1, Math.ceil(seconds))
       if (cooldownTimer !== undefined) window.clearInterval(cooldownTimer)
       submit.disabled = true
-      const tick = (): void => {
+      const render = (): void => {
         error.textContent = `登录尝试过多，请 ${left} 秒后重试`
         setBanner('登录被限流，请稍候', 'warn')
-        if (left <= 1) {
+      }
+      render()
+      cooldownTimer = window.setInterval(() => {
+        left--
+        if (left <= 0) {
           window.clearInterval(cooldownTimer)
           cooldownTimer = undefined
           submit.disabled = false
@@ -115,10 +119,8 @@ function showLogin(message?: string): Promise<{ student_no: string; name: string
           setBanner('可以重新登录了', 'busy')
           return
         }
-        left--
-      }
-      tick()
-      if (left > 1) cooldownTimer = window.setInterval(tick, 1000)
+        render()
+      }, 1000)
     }
 
     form.addEventListener('submit', (ev) => {

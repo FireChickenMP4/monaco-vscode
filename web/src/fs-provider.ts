@@ -18,7 +18,8 @@ import type { IDisposable } from '@codingame/monaco-vscode-api/vscode/vs/base/co
 import type { URI } from '@codingame/monaco-vscode-api/vscode/vs/base/common/uri'
 import { api, ApiError } from './api'
 
-const PENDING_KEY = 'examfs.pending.v1'
+const PENDING_KEY = 'examfs.pending.v2'
+const LEGACY_PENDING_PREFIX = 'examfs.pending.v1'
 
 export interface ProviderStatus {
   online: boolean
@@ -148,9 +149,14 @@ export class RemoteFileSystemProvider implements IFileSystemProviderWithFileRead
   }
 
   private loadPending(): void {
-    // v1 没有按学号隔离，直接丢弃，避免把上一位考生的内容写进新工作区。
+    // 丢弃旧版（未按学号隔离）的缓冲，避免把上一位考生的内容写进新工作区。
     try {
-      localStorage.removeItem(PENDING_KEY)
+      const stale: string[] = []
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i)
+        if (key === LEGACY_PENDING_PREFIX || key?.startsWith(`${LEGACY_PENDING_PREFIX}:`)) stale.push(key)
+      }
+      for (const key of stale) localStorage.removeItem(key)
     } catch {
       // 忽略
     }
@@ -220,6 +226,25 @@ export class RemoteFileSystemProvider implements IFileSystemProviderWithFileRead
     return true
   }
 
+  /**
+   * 写回成功后的收尾：更新 etag、删除条目、刷新本地缓存。
+   * 如果写回期间同路径又有新保存（条目被替换），只把最新 etag 交给新条目，
+   * 不动缓存也不删除，避免旧内容覆盖新内容。
+   */
+  private applyWriteResult(item: PendingWrite, entry: { etag?: string }, content: Uint8Array): void {
+    const etag = entry.etag ?? ''
+    this.etags.set(item.path, etag)
+    const current = this.pending.find((p) => p.path === item.path)
+    if (current && current.id !== item.id) {
+      current.baseEtag = etag
+      return
+    }
+    if (this.removePending(item.id)) {
+      this.markWritten(item.path, content)
+      this.update({ lastSavedAt: Date.now(), lastError: null, online: true })
+    }
+  }
+
   /** 重连后把本地缓冲按顺序写回服务端。 */
   async flushPending(): Promise<void> {
     if (this.flushing || this.pending.length === 0) return
@@ -230,13 +255,7 @@ export class RemoteFileSystemProvider implements IFileSystemProviderWithFileRead
         const content = fromBase64(item.content)
         try {
           const entry = await api.write(item.path, content, item.baseEtag ?? '*')
-          this.etags.set(item.path, entry.etag ?? '')
-          // 只有条目仍是写出去的那一份时才更新缓存并删除；否则说明写回期间
-          // 编辑器又保存了新内容，保留新条目交给下一轮 flush。
-          if (this.removePending(item.id)) {
-            this.markWritten(item.path, content)
-            this.update({ lastSavedAt: Date.now(), lastError: null, online: true })
-          }
+          this.applyWriteResult(item, entry, content)
         } catch (err) {
           if (err instanceof ApiError && err.status === 401) {
             this.update({ lastError: '会话已过期，等待重新登录' })
@@ -244,16 +263,14 @@ export class RemoteFileSystemProvider implements IFileSystemProviderWithFileRead
             break
           }
           if (err instanceof ApiError && err.status === 409 && err.currentEtag) {
-            // 冲突：保留考生本地内容，用服务端最新 etag 再写一次，并提示。
             this.update({ lastConflict: item.path })
             this.options.onConflict?.(item.path)
+            // 写回期间如果编辑器又保存了更新的内容，这个条目已经被替换/删除，
+            // 再用服务端 etag 覆盖就会把新内容冲掉，直接放弃这一轮。
+            if (!this.pending.some((p) => p.id === item.id)) break
             try {
               const entry = await api.write(item.path, content, err.currentEtag)
-              this.etags.set(item.path, entry.etag ?? '')
-              if (this.removePending(item.id)) {
-                this.markWritten(item.path, content)
-                this.update({ lastSavedAt: Date.now(), lastError: null })
-              }
+              this.applyWriteResult(item, entry, content)
               continue
             } catch (retryErr) {
               this.update({ lastError: describe(retryErr) })

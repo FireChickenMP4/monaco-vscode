@@ -715,6 +715,22 @@ func TestAuditCSVTruncationHeader(t *testing.T) {
 	if got := res.Header.Get("X-Truncated"); got != "true" {
 		t.Fatalf("X-Truncated = %q, want true", got)
 	}
+
+	// 条数恰好等于 limit 时不应标记截断（该考生共有 create_student/login/write 三条）。
+	req, _ = http.NewRequest(http.MethodGet, e.server.URL+"/api/admin/audit.csv?student=2026001&limit=3", nil)
+	req.Header.Set("Authorization", "Bearer "+testAdminToken)
+	res2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res2.Body.Close()
+	io.Copy(io.Discard, res2.Body)
+	if got := res2.Header.Get("X-Row-Count"); got != "3" {
+		t.Fatalf("X-Row-Count = %q, want 3", got)
+	}
+	if got := res2.Header.Get("X-Truncated"); got != "false" {
+		t.Fatalf("X-Truncated = %q, want false", got)
+	}
 }
 
 func min(a, b int) int {

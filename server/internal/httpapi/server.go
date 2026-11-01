@@ -444,8 +444,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "bad_credentials", "invalid student_no or token", nil)
 		return
 	}
+	// 只清账号桶；IP 桶按窗口自然过期，否则一次成功登录就能无限枚举其他学号。
 	s.loginLimiter.reset(accountKey)
-	s.ipLimiter.reset(ipKey)
 	sess, err := s.st.CreateSession(r.Context(), st.No, ip, s.cfg.SessionTTL)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error(), nil)

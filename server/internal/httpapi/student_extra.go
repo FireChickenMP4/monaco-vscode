@@ -226,17 +226,27 @@ func (s *Server) handleAdminAuditCSV(w http.ResponseWriter, r *http.Request) {
 	if limit > store.MaxAuditLimit {
 		limit = store.MaxAuditLimit
 	}
-	list, err := s.st.ListAudit(r.Context(), studentNo, limit)
+	// 多查一条用来判断是否真的还有更早的记录（恰好等于 limit 时不算截断）。
+	queryLimit := limit + 1
+	if queryLimit > store.MaxAuditLimit {
+		queryLimit = store.MaxAuditLimit
+	}
+	list, err := s.st.ListAudit(r.Context(), studentNo, queryLimit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error(), nil)
 		return
 	}
+	truncated := len(list) > limit
+	if truncated {
+		list = list[:limit]
+	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="audit.csv"`)
 	w.Header().Set("X-Row-Count", strconv.Itoa(len(list)))
-	if len(list) >= limit {
-		// 达到上限说明可能还有更早的记录，明确告知而不是静默截断。
+	if truncated {
 		w.Header().Set("X-Truncated", "true")
+	} else {
+		w.Header().Set("X-Truncated", "false")
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF})
