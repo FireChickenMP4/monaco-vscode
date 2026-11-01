@@ -233,16 +233,19 @@ export class RemoteFileSystemProvider implements IFileSystemProviderWithFileRead
    */
   private applyWriteResult(item: PendingWrite, entry: { etag?: string }, content: Uint8Array): void {
     const etag = entry.etag ?? ''
-    this.etags.set(item.path, etag)
     const current = this.pending.find((p) => p.path === item.path)
     if (current && current.id !== item.id) {
+      // 写回期间同路径又有新保存：只把最新 etag 交给新条目，不碰缓存/条目。
+      this.etags.set(item.path, etag)
       current.baseEtag = etag
       return
     }
     if (this.removePending(item.id)) {
+      this.etags.set(item.path, etag)
       this.markWritten(item.path, content)
       this.update({ lastSavedAt: Date.now(), lastError: null, online: true })
     }
+    // 条目已被成功的直接保存删除时什么都不做，避免把 etag 回退到旧值。
   }
 
   /** 重连后把本地缓冲按顺序写回服务端。 */
@@ -263,11 +266,10 @@ export class RemoteFileSystemProvider implements IFileSystemProviderWithFileRead
             break
           }
           if (err instanceof ApiError && err.status === 409 && err.currentEtag) {
+            // 条目已被更新的保存替换/删除时，直接放弃这一轮，也不弹冲突提示。
+            if (!this.pending.some((p) => p.id === item.id)) break
             this.update({ lastConflict: item.path })
             this.options.onConflict?.(item.path)
-            // 写回期间如果编辑器又保存了更新的内容，这个条目已经被替换/删除，
-            // 再用服务端 etag 覆盖就会把新内容冲掉，直接放弃这一轮。
-            if (!this.pending.some((p) => p.id === item.id)) break
             try {
               const entry = await api.write(item.path, content, err.currentEtag)
               this.applyWriteResult(item, entry, content)
