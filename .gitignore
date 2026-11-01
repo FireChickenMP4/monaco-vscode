@@ -1,0 +1,30 @@
+# 构建产物
+/bin/
+/public/assets/
+/public/index.html
+/public/admin.html
+
+# 运行时数据（考生工作区、快照、SQLite）
+/data/
+
+# 依赖
+/node_modules/
+/web/node_modules/
+/tests/e2e/node_modules/
+
+# 前端构建缓存
+/web/.vite/
+*/.vite/
+
+# 测试与浏览器工具产物
+/.playwright-mcp/
+/test-results/
+/playwright-report/
+
+# 编辑器 / 系统
+/.idea/
+/.vscode/
+*.log
+*.tmp
+Thumbs.db
+.DS_Store

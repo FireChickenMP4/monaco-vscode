@@ -1,0 +1,11 @@
+{
+  "id": "sum",
+  "title": "A+B",
+  "time_limit_ms": 10000,
+  "memory_mb": 512,
+  "cases": [
+    { "input": "1 2\n", "output": "3\n" },
+    { "input": "-5 5\n", "output": "0\n" },
+    { "input": "1000000000 1000000000\n", "output": "2000000000\n" }
+  ]
+}

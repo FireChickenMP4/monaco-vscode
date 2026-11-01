@@ -1,0 +1,23 @@
+[Unit]
+Description=examd - exam workbench backend (static assets + file API + snapshot + judge)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=exam
+Group=exam
+WorkingDirectory=/opt/exam
+EnvironmentFile=-/etc/examd.env
+ExecStart=/opt/exam/bin/examd serve -data /var/lib/exam -web /opt/exam/public -problems /opt/exam/problems
+Restart=always
+RestartSec=2
+TimeoutStopSec=20
+LimitNOFILE=65535
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/exam
+
+[Install]
+WantedBy=multi-user.target
