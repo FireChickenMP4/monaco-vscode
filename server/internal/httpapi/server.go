@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +28,11 @@ type Config struct {
 	AdminCIDRs   []string
 	// JudgeLimit 是每人每题允许的判题次数（默认 20）。
 	JudgeLimit int
+	// CookieSecure 强制给会话 Cookie 加 Secure；前置 TLS 时也应在配置里打开。
+	CookieSecure bool
+	// LoginLimit / LoginWindow 限制同一来源的登录失败次数（默认 10 次 / 5 分钟）。
+	LoginLimit  int
+	LoginWindow time.Duration
 	// TrustProxy 为 true 时从 X-Forwarded-For 取客户端 IP。
 	TrustProxy bool
 }
@@ -43,6 +49,8 @@ type Server struct {
 
 	gzipMu    sync.Mutex
 	gzipCache sync.Map
+
+	loginLimiter *loginLimiter
 }
 
 // New 创建 HTTP 服务。
@@ -59,7 +67,15 @@ func New(cfg Config, st *store.Store, snap *snapshot.Manager, queue *judge.Queue
 	if log == nil {
 		log = slog.Default()
 	}
-	s := &Server{cfg: cfg, st: st, snap: snap, queue: queue, log: log, mux: http.NewServeMux()}
+	s := &Server{
+		cfg:          cfg,
+		st:           st,
+		snap:         snap,
+		queue:        queue,
+		log:          log,
+		mux:          http.NewServeMux(),
+		loginLimiter: newLoginLimiter(cfg.LoginLimit, cfg.LoginWindow),
+	}
 	for _, c := range cfg.AdminCIDRs {
 		if _, n, err := net.ParseCIDR(strings.TrimSpace(c)); err == nil {
 			s.admin = append(s.admin, n)
@@ -104,6 +120,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/admin/students/reset-token", s.withAdmin(s.handleAdminResetToken))
 	m.HandleFunc("POST /api/admin/students/disable", s.withAdmin(s.handleAdminDisable))
 	m.HandleFunc("GET /api/admin/audit", s.withAdmin(s.handleAdminAudit))
+	m.HandleFunc("GET /api/admin/audit.csv", s.withAdmin(s.handleAdminAuditCSV))
 	m.HandleFunc("GET /api/admin/snapshots", s.withAdmin(s.handleAdminSnapshots))
 	m.HandleFunc("POST /api/admin/snapshots/restore", s.withAdmin(s.handleAdminRestore))
 	m.HandleFunc("POST /api/admin/judge", s.withAdmin(s.handleAdminJudge))
@@ -357,14 +374,26 @@ const (
 	adminCookie   = "exam_admin"
 )
 
-func (s *Server) setCookie(w http.ResponseWriter, name, value string, maxAge int) {
+// cookieSecure 判断会话 Cookie 是否需要 Secure：
+// 显式配置优先；前置 TLS 时可由 X-Forwarded-Proto 推断；本地直连 HTTP 则关闭。
+func (s *Server) cookieSecure(r *http.Request) bool {
+	if s.cfg.CookieSecure {
+		return true
+	}
+	if r.TLS != nil {
+		return true
+	}
+	return s.cfg.TrustProxy && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+func (s *Server) setCookie(w http.ResponseWriter, r *http.Request, name, value string, maxAge int) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     name,
 		Value:    value,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   false, // 考场内网使用 HTTP；若前置 TLS 请改为 true。
+		Secure:   s.cookieSecure(r),
 		MaxAge:   maxAge,
 	})
 }
@@ -383,21 +412,35 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.StudentNo = strings.TrimSpace(req.StudentNo)
+	ip := s.clientIP(r)
+	limitKeys := []string{"ip:" + ip, "user:" + ip + "|" + req.StudentNo}
+	if ok, wait := s.loginLimiter.check(limitKeys...); !ok {
+		retry := int(wait.Seconds()) + 1
+		w.Header().Set("Retry-After", strconv.Itoa(retry))
+		s.st.Audit(r.Context(), store.AuditRecord{StudentNo: req.StudentNo, Role: "student", Action: "login",
+			Status: http.StatusTooManyRequests, IP: ip, Detail: "rate limited"})
+		writeError(w, http.StatusTooManyRequests, "too_many_attempts", "too many failed login attempts", map[string]any{
+			"retry_after": retry,
+		})
+		return
+	}
 	st, err := s.st.Authenticate(r.Context(), req.StudentNo, req.Token)
 	if err != nil {
+		s.loginLimiter.fail(limitKeys...)
 		s.st.Audit(r.Context(), store.AuditRecord{StudentNo: req.StudentNo, Role: "student", Action: "login",
-			Status: http.StatusUnauthorized, IP: s.clientIP(r)})
+			Status: http.StatusUnauthorized, IP: ip})
 		writeError(w, http.StatusUnauthorized, "bad_credentials", "invalid student_no or token", nil)
 		return
 	}
-	sess, err := s.st.CreateSession(r.Context(), st.No, s.clientIP(r), s.cfg.SessionTTL)
+	s.loginLimiter.reset(limitKeys...)
+	sess, err := s.st.CreateSession(r.Context(), st.No, ip, s.cfg.SessionTTL)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error(), nil)
 		return
 	}
-	s.setCookie(w, sessionCookie, sess.ID, int(s.cfg.SessionTTL.Seconds()))
+	s.setCookie(w, r, sessionCookie, sess.ID, int(s.cfg.SessionTTL.Seconds()))
 	s.st.Audit(r.Context(), store.AuditRecord{StudentNo: st.No, Role: "student", Action: "login",
-		Status: http.StatusOK, IP: s.clientIP(r)})
+		Status: http.StatusOK, IP: ip})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"student_no": st.No,
 		"name":       st.Name,
@@ -409,7 +452,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		_ = s.st.DeleteSession(r.Context(), c.Value)
 	}
-	s.setCookie(w, sessionCookie, "", -1)
+	s.setCookie(w, r, sessionCookie, "", -1)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -441,6 +484,14 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "ip_denied", "admin access is restricted to allowed networks", nil)
 		return
 	}
+	if ok, wait := s.loginLimiter.check("admin:" + s.clientIP(r)); !ok {
+		retry := int(wait.Seconds()) + 1
+		w.Header().Set("Retry-After", strconv.Itoa(retry))
+		writeError(w, http.StatusTooManyRequests, "too_many_attempts", "too many failed login attempts", map[string]any{
+			"retry_after": retry,
+		})
+		return
+	}
 	var req struct {
 		Token string `json:"token"`
 	}
@@ -449,19 +500,22 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.cfg.AdminToken == "" || !subtleEqual(req.Token, s.cfg.AdminToken) {
+		ip := s.clientIP(r)
+		s.loginLimiter.fail("admin:" + ip)
 		s.st.Audit(r.Context(), store.AuditRecord{Role: "admin", Action: "admin_login",
-			Status: http.StatusUnauthorized, IP: s.clientIP(r)})
+			Status: http.StatusUnauthorized, IP: ip})
 		writeError(w, http.StatusUnauthorized, "bad_credentials", "invalid admin token", nil)
 		return
 	}
-	s.setCookie(w, adminCookie, req.Token, 8*3600)
+	s.loginLimiter.reset("admin:" + s.clientIP(r))
+	s.setCookie(w, r, adminCookie, req.Token, 8*3600)
 	s.st.Audit(r.Context(), store.AuditRecord{Role: "admin", Action: "admin_login",
 		Status: http.StatusOK, IP: s.clientIP(r)})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
-	s.setCookie(w, adminCookie, "", -1)
+	s.setCookie(w, r, adminCookie, "", -1)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

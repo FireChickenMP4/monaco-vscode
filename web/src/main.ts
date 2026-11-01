@@ -35,11 +35,14 @@ import getThemeServiceOverride from '@codingame/monaco-vscode-theme-service-over
 import getBannerServiceOverride from '@codingame/monaco-vscode-view-banner-service-override'
 import getStatusBarServiceOverride from '@codingame/monaco-vscode-view-status-bar-service-override'
 import getTitleBarServiceOverride from '@codingame/monaco-vscode-view-title-bar-service-override'
-import getWorkbenchServiceOverride from '@codingame/monaco-vscode-workbench-service-override'
+import getWorkbenchServiceOverride, {
+  Parts,
+  setPartVisibility
+} from '@codingame/monaco-vscode-workbench-service-override'
 import getWorkingCopyServiceOverride from '@codingame/monaco-vscode-working-copy-service-override'
 import 'vscode/localExtensionHost'
 import * as vscode from 'vscode'
-import { ApiError, api } from './api'
+import { ApiError, api, onUnauthorized } from './api'
 import { RemoteFileSystemProvider, type ProviderStatus } from './fs-provider'
 
 const SCHEME = 'examfs'
@@ -80,12 +83,13 @@ function setBanner(text: string, kind: 'ok' | 'warn' | 'error' | 'busy' = 'ok'):
   window.__exam.status = kind
 }
 
-function showLogin(): Promise<{ student_no: string; name: string }> {
-  return new Promise((resolve, reject) => {
+function showLogin(message?: string): Promise<{ student_no: string; name: string }> {
+  return new Promise((resolve) => {
     loginRoot.hidden = false
     loginRoot.innerHTML = `
       <form id="exam-login-form" autocomplete="off">
         <h1>考场工作台</h1>
+        ${message ? `<p class="exam-hint">${escapeHtml(message)}</p>` : ''}
         <label>学号 <input name="student_no" required autofocus /></label>
         <label>令牌 <input name="token" type="password" required /></label>
         <button type="submit">登录</button>
@@ -105,6 +109,7 @@ function showLogin(): Promise<{ student_no: string; name: string }> {
         .then(() => api.me())
         .then((me) => {
           loginRoot.hidden = true
+          updateUserLabel(me)
           resolve(me)
         })
         .catch((err: unknown) => {
@@ -115,12 +120,52 @@ function showLogin(): Promise<{ student_no: string; name: string }> {
   })
 }
 
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (ch) => {
+    switch (ch) {
+      case '&':
+        return '&amp;'
+      case '<':
+        return '&lt;'
+      case '>':
+        return '&gt;'
+      case '"':
+        return '&quot;'
+      default:
+        return '&#39;'
+    }
+  })
+}
+
+function updateUserLabel(me: { student_no: string; name: string }): void {
+  window.__exam.student = me.student_no
+  const label = document.getElementById('exam-user')
+  if (label) label.textContent = `${me.student_no}${me.name ? ' ' + me.name : ''}`
+}
+
 async function ensureSession(): Promise<{ student_no: string; name: string }> {
   const session = await api.session()
   if (session.authenticated) {
     return { student_no: session.student_no, name: session.name }
   }
   return await showLogin()
+}
+
+let reauthInProgress = false
+
+// 会话过期：弹登录框，登录成功后把断线/过期期间缓冲的修改写回。
+async function handleUnauthorized(currentProvider: RemoteFileSystemProvider): Promise<void> {
+  if (reauthInProgress) return
+  reauthInProgress = true
+  try {
+    setBanner('会话已过期，请重新登录（本地修改已缓存）', 'error')
+    const me = await showLogin('会话已过期，请重新登录。本地未同步的修改会在登录后自动保存。')
+    updateUserLabel(me)
+    setBanner('已重新登录，正在同步本地修改...', 'busy')
+    await currentProvider.flushPending()
+  } finally {
+    reauthInProgress = false
+  }
 }
 
 function statusText(status: ProviderStatus): string {
@@ -134,18 +179,28 @@ function statusText(status: ProviderStatus): string {
 async function main(): Promise<void> {
   setBanner('正在连接服务器...', 'busy')
   const me = await ensureSession()
-  window.__exam.student = me.student_no
+  updateUserLabel(me)
 
   let notification: INotificationService | undefined
-  const provider = new RemoteFileSystemProvider((path) => {
-    window.__exam.lastConflict = path
-    setBanner(`保存冲突：${path}`, 'warn')
-    notification?.notify({
-      severity: Severity.Warning,
-      message: `文件 ${path} 已被其他位置修改。当前内容已按本地版本保存，请检查是否需要重新加载。`
-    })
+  const provider = new RemoteFileSystemProvider({
+    onConflict: (path) => {
+      window.__exam.lastConflict = path
+      setBanner(`保存冲突：${path}`, 'warn')
+      notification?.notify({
+        severity: Severity.Warning,
+        message: `文件 ${path} 已被其他位置修改。当前内容已按本地版本保存，请检查是否需要重新加载。`
+      })
+    },
+    onUnauthorized: () => {
+      void handleUnauthorized(provider)
+    }
   })
   window.__exam.flush = () => provider.flushPending()
+
+  // stat/read 等调用拿到 401 时也触发重新登录。
+  onUnauthorized(() => {
+    void handleUnauthorized(provider)
+  })
 
   provider.onStatus((status) => {
     window.__exam.pending = status.pending
@@ -245,7 +300,9 @@ async function main(): Promise<void> {
   // 先尝试把上次断线留下的缓冲写完。
   void provider.flushPending()
 
-  document.getElementById('exam-user')!.textContent = `${me.student_no}${me.name ? ' ' + me.name : ''}`
+  // 关闭终端/输出面板，减少误触与内存占用（PLAN Q-04）。
+  setPartVisibility(Parts.PANEL_PART, false)
+
   document.getElementById('exam-logout')!.addEventListener('click', () => {
     void api.logout().then(() => window.location.reload())
   })

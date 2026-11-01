@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -99,6 +100,23 @@ func envOr(key, def string) string {
 	return def
 }
 
+func envBool(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
 func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", envOr("EXAM_ADDR", ":8080"), "listen address")
@@ -113,6 +131,9 @@ func runServe(args []string) error {
 	workers := fs.Int("judge-workers", 2, "judge worker count")
 	adminCIDRs := fs.String("admin-cidr", envOr("EXAM_ADMIN_CIDR", ""), "comma separated CIDRs allowed to use admin endpoints")
 	trustProxy := fs.Bool("trust-proxy", false, "trust X-Forwarded-For")
+	cookieSecure := fs.Bool("cookie-secure", envBool("EXAM_COOKIE_SECURE"), "add the Secure attribute to session cookies (use with HTTPS)")
+	loginLimit := fs.Int("login-limit", envInt("EXAM_LOGIN_LIMIT", 10), "failed logins per window before blocking")
+	loginWindow := fs.Duration("login-window", 5*time.Minute, "login failure counting window")
 	_ = fs.Parse(args)
 
 	p, err := resolvePaths(*data)
@@ -170,6 +191,9 @@ func runServe(args []string) error {
 		AdminCIDRs:   splitList(*adminCIDRs),
 		JudgeLimit:   20,
 		TrustProxy:   *trustProxy,
+		CookieSecure: *cookieSecure,
+		LoginLimit:   *loginLimit,
+		LoginWindow:  *loginWindow,
 	}, st, snap, queue, slog.Default())
 
 	srv := &http.Server{

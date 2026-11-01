@@ -100,6 +100,9 @@ cd ..
 | `-judge-workers` | `2` | 判题并发 |
 | `-admin-cidr` / `EXAM_ADMIN_CIDR` | 空（不限） | 允许访问管理端接口的网段，逗号分隔 |
 | `-trust-proxy` | `false` | 从 `X-Forwarded-For` 取客户端 IP |
+| `-cookie-secure` / `EXAM_COOKIE_SECURE` | `false` | 给会话 Cookie 加 `Secure`（配合 HTTPS 使用） |
+| `-login-limit` / `EXAM_LOGIN_LIMIT` | `10` | 同一来源在一个窗口内允许的登录失败次数 |
+| `-login-window` | `5m` | 登录失败计数窗口，超限后封禁一个窗口 |
 
 ## 文件 API
 
@@ -134,7 +137,22 @@ node run.mjs
 node loadtest.mjs -n 70 -soak 60
 ```
 
+## 管理端
+
+浏览器打开 `/admin.html`，用 `-admin-token` 的令牌登录，可以：
+
+- 新建考生、重置令牌、停用/启用
+- 查看并回放快照
+- 提交判题、查看判题记录
+- 查询审计记录，并导出 CSV（`/api/admin/audit.csv`，带 UTF-8 BOM，Excel 可直接打开）
+
 ## 部署
+
+判题镜像：
+
+```bash
+docker build -f deploy/docker/exam-go.Dockerfile -t exam-go:1.26 .
+```
 
 ```bash
 # Linux

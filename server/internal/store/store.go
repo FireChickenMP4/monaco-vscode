@@ -358,7 +358,7 @@ func (s *Store) Audit(ctx context.Context, r AuditRecord) {
 
 // ListAudit 按考生（空表示全部）倒序列出审计记录。
 func (s *Store) ListAudit(ctx context.Context, studentNo string, limit int) ([]AuditRecord, error) {
-	if limit <= 0 || limit > 1000 {
+	if limit <= 0 || limit > 100000 {
 		limit = 200
 	}
 	var rows *sql.Rows

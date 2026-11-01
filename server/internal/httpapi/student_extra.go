@@ -1,8 +1,11 @@
 package httpapi
 
 import (
+	"encoding/csv"
 	"net/http"
 	"sort"
+	"strconv"
+	"time"
 
 	"exam.local/monaco-examd/internal/store"
 )
@@ -204,6 +207,42 @@ func (s *Server) handleAdminAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"audit": list})
+}
+
+// handleAdminAuditCSV 导出审计记录，带 UTF-8 BOM 以便 Excel 直接打开。
+func (s *Server) handleAdminAuditCSV(w http.ResponseWriter, r *http.Request) {
+	studentNo := r.URL.Query().Get("student")
+	limit := 50000
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := parseInt(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	list, err := s.st.ListAudit(r.Context(), studentNo, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error(), nil)
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="audit.csv"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF})
+	cw := csv.NewWriter(w)
+	_ = cw.Write([]string{"id", "at", "student_no", "role", "action", "path", "status", "ip", "detail"})
+	for _, a := range list {
+		_ = cw.Write([]string{
+			strconv.FormatInt(a.ID, 10),
+			a.At.Format(time.RFC3339),
+			a.StudentNo,
+			a.Role,
+			a.Action,
+			a.Path,
+			strconv.Itoa(a.Status),
+			a.IP,
+			a.Detail,
+		})
+	}
+	cw.Flush()
 }
 
 func (s *Server) handleAdminSnapshots(w http.ResponseWriter, r *http.Request) {

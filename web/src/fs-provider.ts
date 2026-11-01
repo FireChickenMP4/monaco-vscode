@@ -73,6 +73,11 @@ function toProviderError(err: unknown): Error {
   return FileSystemProviderError.create(err instanceof Error ? err.message : String(err), FileSystemProviderErrorCode.Unknown)
 }
 
+export interface ProviderOptions {
+  onConflict?: (path: string) => void
+  onUnauthorized?: () => void
+}
+
 export class RemoteFileSystemProvider implements IFileSystemProviderWithFileReadWriteCapability {
   readonly capabilities =
     FileSystemProviderCapabilities.FileReadWrite | FileSystemProviderCapabilities.PathCaseSensitive
@@ -101,7 +106,7 @@ export class RemoteFileSystemProvider implements IFileSystemProviderWithFileRead
     lastSavedAt: null
   }
 
-  constructor(private readonly onConflict?: (path: string) => void) {
+  constructor(private readonly options: ProviderOptions = {}) {
     this.loadPending()
     if (typeof window !== 'undefined') {
       window.addEventListener('online', () => {
@@ -202,10 +207,15 @@ export class RemoteFileSystemProvider implements IFileSystemProviderWithFileRead
           this.persistPending()
           this.update({ lastSavedAt: Date.now(), lastError: null, online: true })
         } catch (err) {
+          if (err instanceof ApiError && err.status === 401) {
+            this.update({ lastError: '会话已过期，等待重新登录' })
+            this.options.onUnauthorized?.()
+            break
+          }
           if (err instanceof ApiError && err.status === 409 && err.currentEtag) {
             // 冲突：保留考生本地内容，用服务端最新 etag 再写一次，并提示。
             this.update({ lastConflict: item.path })
-            this.onConflict?.(item.path)
+            this.options.onConflict?.(item.path)
             try {
               const entry = await api.write(item.path, content, err.currentEtag)
               this.etags.set(item.path, entry.etag ?? '')
@@ -322,7 +332,7 @@ export class RemoteFileSystemProvider implements IFileSystemProviderWithFileRead
       }
       if (err instanceof ApiError && err.status === 409 && err.currentEtag) {
         this.update({ lastConflict: path })
-        this.onConflict?.(path)
+        this.options.onConflict?.(path)
         try {
           const entry = await api.write(path, content, err.currentEtag)
           this.etags.set(path, entry.etag ?? '')
@@ -333,6 +343,12 @@ export class RemoteFileSystemProvider implements IFileSystemProviderWithFileRead
         } catch (retryErr) {
           err = retryErr
         }
+      }
+      if (err instanceof ApiError && err.status === 401) {
+        // 会话过期：先缓存本地内容，重新登录后由 flushPending 写回。
+        this.queueWrite(path, content, baseEtag)
+        this.options.onUnauthorized?.()
+        return
       }
       if (err instanceof ApiError && err.status === 0) {
         // 断线：乐观成功 + 本地缓冲，重连后 flush。

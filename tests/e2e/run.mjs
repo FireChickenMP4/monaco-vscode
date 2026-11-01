@@ -219,6 +219,33 @@ async function main() {
     return 'buffered while offline, flushed after reconnect'
   })
 
+  const reloginMarker = `// relogin-${Date.now()}`
+
+  await check('V-session', 'expired session asks to re-login and keeps edits', async () => {
+    await focusEditor()
+    // 清掉会话 Cookie，模拟 12 小时后会话过期。
+    await context.clearCookies()
+    await page.keyboard.type(`\n${reloginMarker}`)
+    await page.waitForFunction(
+      (m) => (document.querySelector('.view-lines')?.textContent ?? '').replace(/\u00a0/g, ' ').includes(m),
+      reloginMarker,
+      { timeout: 15000 }
+    )
+    await page.waitForFunction(() => window.__exam?.pending >= 1, undefined, { timeout: 20000 })
+    await page.waitForSelector('#exam-login-form', { state: 'visible', timeout: 20000 })
+
+    await page.fill('input[name="student_no"]', studentNo)
+    await page.fill('input[name="token"]', token)
+    await page.click('#exam-login-form button[type="submit"]')
+    await page.waitForFunction(() => window.__exam?.pending === 0, undefined, { timeout: 30000 })
+    await page.waitForTimeout(500)
+
+    const after = await readFile()
+    assert(after.body.includes(reloginMarker), 'edit lost after re-login')
+    assert((await exam()).ready === true, 'workbench should stay ready after re-login')
+    return 're-login prompt shown, buffered edit flushed'
+  })
+
   const unexpected = consoleErrors.filter(
     (t) =>
       !/401 \(Unauthorized\)/.test(t) &&

@@ -186,6 +186,7 @@
         <div class="row">
           <input id="audit-student" placeholder="学号（留空为全部）" />
           <button id="audit-load">查询</button>
+          <button id="audit-export">导出 CSV</button>
         </div>
         <table>
           <thead>
@@ -372,6 +373,11 @@
 
       $('snap-load').addEventListener('click', () => loadSnapshots().catch((e) => alert(e.message)))
       $('audit-load').addEventListener('click', () => loadAudit().catch((e) => alert(e.message)))
+      $('audit-export').addEventListener('click', () => {
+        const student = $('audit-student').value.trim()
+        const query = student ? `?student=${encodeURIComponent(student)}` : ''
+        window.open(`/api/admin/audit.csv${query}`, '_blank')
+      })
       $('judge-load').addEventListener('click', () => loadJudgeRuns().catch((e) => alert(e.message)))
       $('judge-submit').addEventListener('click', async () => {
         $('judge-result').hidden = false

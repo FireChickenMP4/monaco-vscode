@@ -27,6 +27,13 @@ export class ApiError extends Error {
   }
 }
 
+// 会话过期时的回调；登录接口自身的 401 不触发（那是密码错误）。
+let unauthorizedHandler: (() => void) | undefined
+
+export function onUnauthorized(handler: (() => void) | undefined): void {
+  unauthorizedHandler = handler
+}
+
 async function request(input: string, init?: RequestInit): Promise<Response> {
   let res: Response
   try {
@@ -35,6 +42,9 @@ async function request(input: string, init?: RequestInit): Promise<Response> {
     throw new ApiError(0, 'network', err instanceof Error ? err.message : 'network error')
   }
   if (!res.ok) {
+    if (res.status === 401 && !input.includes('/api/login')) {
+      unauthorizedHandler?.()
+    }
     let payload: Record<string, unknown> = {}
     try {
       payload = (await res.json()) as Record<string, unknown>

@@ -448,3 +448,151 @@ func TestJudgeQueueDisabledWhenNil(t *testing.T) {
 
 var _ = judge.Problem{}
 var _ = workspace.ErrForbidden
+
+func TestLoginRateLimit(t *testing.T) {
+	root := t.TempDir()
+	ws := filepath.Join(root, "workspaces")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(context.Background(), filepath.Join(root, "examd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.CreateStudent(context.Background(), "2026001", "张三", "tok-1"); err != nil {
+		t.Fatal(err)
+	}
+	api := New(Config{
+		WebDir:       root,
+		WorkspaceDir: ws,
+		AdminToken:   testAdminToken,
+		LoginLimit:   2,
+		LoginWindow:  300 * time.Millisecond,
+	}, st, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv := httptest.NewServer(api.Handler())
+	defer srv.Close()
+
+	attempt := func(token string) *http.Response {
+		b, _ := json.Marshal(map[string]string{"student_no": "2026001", "token": token})
+		res, err := http.Post(srv.URL+"/api/login", "application/json", bytes.NewReader(b))
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, res.Body)
+		res.Body.Close()
+		return res
+	}
+
+	for i := 0; i < 2; i++ {
+		if res := attempt("wrong"); res.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("attempt %d = %d, want 401", i+1, res.StatusCode)
+		}
+	}
+	res := attempt("tok-1")
+	if res.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("blocked attempt = %d, want 429", res.StatusCode)
+	}
+	if res.Header.Get("Retry-After") == "" {
+		t.Fatal("missing Retry-After header")
+	}
+
+	time.Sleep(350 * time.Millisecond)
+	if res := attempt("tok-1"); res.StatusCode != http.StatusOK {
+		t.Fatalf("after window = %d, want 200", res.StatusCode)
+	}
+}
+
+func TestSecureCookieFlag(t *testing.T) {
+	e := newTestEnv(t)
+	e.createStudent("2026001", "张三", "tok-1")
+
+	// 默认（纯 HTTP 内网）不加 Secure。
+	b, _ := json.Marshal(map[string]string{"student_no": "2026001", "token": "tok-1"})
+	res, err := http.Post(e.server.URL+"/api/login", "application/json", bytes.NewReader(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, res.Body)
+	res.Body.Close()
+	if strings.Contains(res.Header.Get("Set-Cookie"), "Secure") {
+		t.Fatalf("unexpected Secure cookie: %s", res.Header.Get("Set-Cookie"))
+	}
+
+	// 打开 CookieSecure 后必须带 Secure。
+	root := t.TempDir()
+	ws := filepath.Join(root, "workspaces")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(context.Background(), filepath.Join(root, "examd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.CreateStudent(context.Background(), "2026002", "李四", "tok-2"); err != nil {
+		t.Fatal(err)
+	}
+	api := New(Config{
+		WebDir:       root,
+		WorkspaceDir: ws,
+		AdminToken:   testAdminToken,
+		CookieSecure: true,
+	}, st, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv := httptest.NewServer(api.Handler())
+	defer srv.Close()
+
+	b, _ = json.Marshal(map[string]string{"student_no": "2026002", "token": "tok-2"})
+	res, err = http.Post(srv.URL+"/api/login", "application/json", bytes.NewReader(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, res.Body)
+	res.Body.Close()
+	if !strings.Contains(res.Header.Get("Set-Cookie"), "Secure") {
+		t.Fatalf("cookie not Secure: %s", res.Header.Get("Set-Cookie"))
+	}
+}
+
+func TestAuditCSVExport(t *testing.T) {
+	e := newTestEnv(t)
+	e.createStudent("2026001", "张三", "tok-1")
+	client := e.login("2026001", "tok-1")
+	req, _ := http.NewRequest(http.MethodPut, e.server.URL+"/api/fs/write?path=/main.go", strings.NewReader("package main\n"))
+	req.Header.Set("If-Match", "*")
+	if r, err := client.Do(req); err != nil || r.StatusCode != http.StatusOK {
+		t.Fatalf("write: %v %v", err, r)
+	}
+
+	req, _ = http.NewRequest(http.MethodGet, e.server.URL+"/api/admin/audit.csv?student=2026001", nil)
+	req.Header.Set("Authorization", "Bearer "+testAdminToken)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", res.StatusCode)
+	}
+	if ct := res.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/csv") {
+		t.Fatalf("content-type = %q", ct)
+	}
+	if !bytes.HasPrefix(body, []byte{0xEF, 0xBB, 0xBF}) {
+		t.Fatal("missing UTF-8 BOM")
+	}
+	text := string(body)
+	if !strings.Contains(text, "student_no,role,action,path,status,ip,detail") {
+		t.Fatalf("missing header: %q", text[:min(120, len(text))])
+	}
+	if !strings.Contains(text, "2026001") || !strings.Contains(text, "/main.go") {
+		t.Fatalf("missing audit row: %q", text)
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
