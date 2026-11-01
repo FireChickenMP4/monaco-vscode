@@ -238,6 +238,7 @@ export class RemoteFileSystemProvider implements IFileSystemProviderWithFileRead
       // 写回期间同路径又有新保存：只把最新 etag 交给新条目，不碰缓存/条目。
       this.etags.set(item.path, etag)
       current.baseEtag = etag
+      this.persistPending()
       return
     }
     if (this.removePending(item.id)) {
