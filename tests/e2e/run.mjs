@@ -50,6 +50,10 @@ async function main() {
   currentPage = page
   // workbench 退出时会弹 beforeunload；默认的 dismiss 会取消导航。
   page.on('dialog', (dialog) => dialog.accept().catch(() => {}))
+  const unauthorized = []
+  page.on('response', (res) => {
+    if (res.status() === 401) unauthorized.push(res.url())
+  })
   page.on('console', (msg) => {
     if (msg.type() === 'error') consoleErrors.push(msg.text())
   })
@@ -226,7 +230,7 @@ async function main() {
   await check('V-console', 'no unexpected console/page errors', async () => {
     assert(pageErrors.length === 0, `page errors: ${pageErrors.join(' | ')}`)
     assert(unexpected.length === 0, `console errors: ${unexpected.slice(0, 5).join(' | ')}`)
-    return `${consoleErrors.length} expected 401 message(s) filtered`
+    return `${unauthorized.length} expected 401 response(s): ${[...new Set(unauthorized)].join(', ')}`
   })
 
   await browser.close()
