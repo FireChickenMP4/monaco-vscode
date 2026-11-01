@@ -1,0 +1,14 @@
+{
+  "name": "exam-e2e",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "浏览器端验收测试（V-01 ~ V-08）",
+  "scripts": {
+    "test": "node run.mjs",
+    "load": "node loadtest.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.61.1"
+  }
+}
