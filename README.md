@@ -99,9 +99,9 @@ cd ..
 | `-problems` / `EXAM_PROBLEMS` | `./problems` | 题目目录 |
 | `-judge-workers` | `2` | 判题并发 |
 | `-admin-cidr` / `EXAM_ADMIN_CIDR` | 空（不限） | 允许访问管理端接口的网段，逗号分隔 |
-| `-trust-proxy` | `false` | 从 `X-Forwarded-For` 取客户端 IP |
-| `-cookie-secure` / `EXAM_COOKIE_SECURE` | `false` | 给会话 Cookie 加 `Secure`（配合 HTTPS 使用） |
-| `-login-limit` / `EXAM_LOGIN_LIMIT` | `10` | 同一来源在一个窗口内允许的登录失败次数 |
+| `-trust-proxy` | `false` | 从 `X-Forwarded-For` **最右一跳**取客户端 IP；要求反代追加而不是透传客户端自带的值（nginx 用 `$proxy_add_x_forwarded_for`） |
+| `-cookie-secure` / `EXAM_COOKIE_SECURE` | `false` | 给会话 Cookie 加 `Secure`（配合 HTTPS 使用；纯 HTTP 下打开会导致登录后仍然未登录） |
+| `-login-limit` / `EXAM_LOGIN_LIMIT` | `10` | 同一学号在同一 IP 上允许的登录失败次数（凭据正确时不受限流影响） |
 | `-login-window` | `5m` | 登录失败计数窗口，超限后封禁一个窗口 |
 
 ## 文件 API

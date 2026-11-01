@@ -223,9 +223,9 @@ async function main() {
 
   await check('V-session', 'expired session asks to re-login and keeps edits', async () => {
     await focusEditor()
-    // 清掉会话 Cookie，模拟 12 小时后会话过期。
-    await context.clearCookies()
     await page.keyboard.type(`\n${reloginMarker}`)
+    // 打完立刻清 Cookie：让 1 秒后的自动保存撞上 401（清得太早会抢走焦点）。
+    await context.clearCookies()
     await page.waitForFunction(
       (m) => (document.querySelector('.view-lines')?.textContent ?? '').replace(/\u00a0/g, ' ').includes(m),
       reloginMarker,

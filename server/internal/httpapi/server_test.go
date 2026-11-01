@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -460,21 +461,26 @@ func TestLoginRateLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	if _, err := st.CreateStudent(context.Background(), "2026001", "张三", "tok-1"); err != nil {
-		t.Fatal(err)
+	for _, s := range []struct{ no, token string }{
+		{"2026001", "tok-1"},
+		{"2026002", "tok-2"},
+	} {
+		if _, err := st.CreateStudent(context.Background(), s.no, "考生", s.token); err != nil {
+			t.Fatal(err)
+		}
 	}
 	api := New(Config{
 		WebDir:       root,
 		WorkspaceDir: ws,
 		AdminToken:   testAdminToken,
 		LoginLimit:   2,
-		LoginWindow:  300 * time.Millisecond,
+		LoginWindow:  2 * time.Second,
 	}, st, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	srv := httptest.NewServer(api.Handler())
 	defer srv.Close()
 
-	attempt := func(token string) *http.Response {
-		b, _ := json.Marshal(map[string]string{"student_no": "2026001", "token": token})
+	attempt := func(studentNo, token string) *http.Response {
+		b, _ := json.Marshal(map[string]string{"student_no": studentNo, "token": token})
 		res, err := http.Post(srv.URL+"/api/login", "application/json", bytes.NewReader(b))
 		if err != nil {
 			t.Fatal(err)
@@ -485,11 +491,12 @@ func TestLoginRateLimit(t *testing.T) {
 	}
 
 	for i := 0; i < 2; i++ {
-		if res := attempt("wrong"); res.StatusCode != http.StatusUnauthorized {
+		if res := attempt("2026001", "wrong"); res.StatusCode != http.StatusUnauthorized {
 			t.Fatalf("attempt %d = %d, want 401", i+1, res.StatusCode)
 		}
 	}
-	res := attempt("tok-1")
+	// 达到阈值后，错误凭据被 429。
+	res := attempt("2026001", "wrong")
 	if res.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("blocked attempt = %d, want 429", res.StatusCode)
 	}
@@ -497,9 +504,17 @@ func TestLoginRateLimit(t *testing.T) {
 		t.Fatal("missing Retry-After header")
 	}
 
-	time.Sleep(350 * time.Millisecond)
-	if res := attempt("tok-1"); res.StatusCode != http.StatusOK {
-		t.Fatalf("after window = %d, want 200", res.StatusCode)
+	// 正确凭据不受限流影响（否则会话过期后考生无法重登）。
+	if res := attempt("2026001", "tok-1"); res.StatusCode != http.StatusOK {
+		t.Fatalf("valid credentials during block = %d, want 200", res.StatusCode)
+	}
+	// 成功登录会清空计数：再输错回到 401。
+	if res := attempt("2026001", "wrong"); res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("after successful login = %d, want 401", res.StatusCode)
+	}
+	// 同一 IP 的其他考生不受影响（避免一个考生把整间教室锁死）。
+	if res := attempt("2026002", "tok-2"); res.StatusCode != http.StatusOK {
+		t.Fatalf("other student on same IP = %d, want 200", res.StatusCode)
 	}
 }
 
@@ -554,6 +569,72 @@ func TestSecureCookieFlag(t *testing.T) {
 	}
 }
 
+// 反代与 TLS 直连下 Secure 的判定分支。
+func TestSecureCookieFromProxyAndTLS(t *testing.T) {
+	root := t.TempDir()
+	ws := filepath.Join(root, "workspaces")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(context.Background(), filepath.Join(root, "examd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.CreateStudent(context.Background(), "2026001", "张三", "tok-1"); err != nil {
+		t.Fatal(err)
+	}
+	api := New(Config{
+		WebDir:       root,
+		WorkspaceDir: ws,
+		AdminToken:   testAdminToken,
+		TrustProxy:   true,
+	}, st, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handler := api.Handler()
+
+	login := func(mut func(*http.Request)) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]string{"student_no": "2026001", "token": "tok-1"})
+		req := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if mut != nil {
+			mut(req)
+		}
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		return rr
+	}
+
+	// 前置 nginx 终止 TLS：X-Forwarded-Proto: https -> Secure
+	rr := login(func(r *http.Request) { r.Header.Set("X-Forwarded-Proto", "https") })
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Header().Get("Set-Cookie"), "Secure") {
+		t.Fatalf("proxy https: status=%d cookie=%s", rr.Code, rr.Header().Get("Set-Cookie"))
+	}
+
+	// 纯 HTTP 反代 -> 不加 Secure
+	rr = login(nil)
+	if strings.Contains(rr.Header().Get("Set-Cookie"), "Secure") {
+		t.Fatalf("plain http should not set Secure: %s", rr.Header().Get("Set-Cookie"))
+	}
+
+	// TLS 直连 -> Secure
+	rr = login(func(r *http.Request) { r.TLS = &tls.ConnectionState{} })
+	if !strings.Contains(rr.Header().Get("Set-Cookie"), "Secure") {
+		t.Fatalf("tls should set Secure: %s", rr.Header().Get("Set-Cookie"))
+	}
+
+	// 信任代理时取 XFF 最右一跳，客户端伪造的前缀无效。
+	if ip := api.clientIP(loginRequestWithXFF(t, "1.2.3.4, 10.0.0.9")); ip != "10.0.0.9" {
+		t.Fatalf("clientIP = %q, want rightmost hop", ip)
+	}
+}
+
+func loginRequestWithXFF(t *testing.T, xff string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/session", nil)
+	req.Header.Set("X-Forwarded-For", xff)
+	return req
+}
+
 func TestAuditCSVExport(t *testing.T) {
 	e := newTestEnv(t)
 	e.createStudent("2026001", "张三", "tok-1")
@@ -587,6 +668,52 @@ func TestAuditCSVExport(t *testing.T) {
 	}
 	if !strings.Contains(text, "2026001") || !strings.Contains(text, "/main.go") {
 		t.Fatalf("missing audit row: %q", text)
+	}
+}
+
+func TestCSVCellEscapesFormula(t *testing.T) {
+	cases := map[string]string{
+		"=1+1":           "'=1+1",
+		"+A1":            "'+A1",
+		"-5":             "'-5",
+		"@SUM(A1)":       "'@SUM(A1)",
+		"\tcmd":          "'\tcmd",
+		"normal/path.go": "normal/path.go",
+		"中文.go":          "中文.go",
+	}
+	for in, want := range cases {
+		if got := csvCell(in); got != want {
+			t.Fatalf("csvCell(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestAuditCSVTruncationHeader(t *testing.T) {
+	e := newTestEnv(t)
+	e.createStudent("2026001", "张三", "tok-1")
+	client := e.login("2026001", "tok-1")
+	req, _ := http.NewRequest(http.MethodPut, e.server.URL+"/api/fs/write?path=/main.go", strings.NewReader("package main\n"))
+	req.Header.Set("If-Match", "*")
+	if r, err := client.Do(req); err != nil || r.StatusCode != http.StatusOK {
+		t.Fatalf("write: %v %v", err, r)
+	}
+
+	req, _ = http.NewRequest(http.MethodGet, e.server.URL+"/api/admin/audit.csv?student=2026001&limit=1", nil)
+	req.Header.Set("Authorization", "Bearer "+testAdminToken)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	io.Copy(io.Discard, res.Body)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", res.StatusCode)
+	}
+	if got := res.Header.Get("X-Row-Count"); got != "1" {
+		t.Fatalf("X-Row-Count = %q", got)
+	}
+	if got := res.Header.Get("X-Truncated"); got != "true" {
+		t.Fatalf("X-Truncated = %q, want true", got)
 	}
 }
 

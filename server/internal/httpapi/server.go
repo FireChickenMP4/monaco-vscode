@@ -51,6 +51,7 @@ type Server struct {
 	gzipCache sync.Map
 
 	loginLimiter *loginLimiter
+	ipLimiter    *loginLimiter
 }
 
 // New 创建 HTTP 服务。
@@ -67,6 +68,10 @@ func New(cfg Config, st *store.Store, snap *snapshot.Manager, queue *judge.Queue
 	if log == nil {
 		log = slog.Default()
 	}
+	ipLimit := cfg.LoginLimit * 10
+	if ipLimit < 50 {
+		ipLimit = 50
+	}
 	s := &Server{
 		cfg:          cfg,
 		st:           st,
@@ -75,6 +80,7 @@ func New(cfg Config, st *store.Store, snap *snapshot.Manager, queue *judge.Queue
 		log:          log,
 		mux:          http.NewServeMux(),
 		loginLimiter: newLoginLimiter(cfg.LoginLimit, cfg.LoginWindow),
+		ipLimiter:    newLoginLimiter(ipLimit, cfg.LoginWindow),
 	}
 	for _, c := range cfg.AdminCIDRs {
 		if _, n, err := net.ParseCIDR(strings.TrimSpace(c)); err == nil {
@@ -159,11 +165,14 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) clientIP(r *http.Request) string {
 	if s.cfg.TrustProxy {
+		// 取最右一跳：由我们最近的代理追加，客户端自带的 XFF 无法伪造。
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			if i := strings.IndexByte(xff, ','); i >= 0 {
-				return strings.TrimSpace(xff[:i])
+			parts := strings.Split(xff, ",")
+			for i := len(parts) - 1; i >= 0; i-- {
+				if ip := strings.TrimSpace(parts[i]); ip != "" {
+					return ip
+				}
 			}
-			return strings.TrimSpace(xff)
 		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -413,26 +422,30 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	req.StudentNo = strings.TrimSpace(req.StudentNo)
 	ip := s.clientIP(r)
-	limitKeys := []string{"ip:" + ip, "user:" + ip + "|" + req.StudentNo}
-	if ok, wait := s.loginLimiter.check(limitKeys...); !ok {
-		retry := int(wait.Seconds()) + 1
-		w.Header().Set("Retry-After", strconv.Itoa(retry))
-		s.st.Audit(r.Context(), store.AuditRecord{StudentNo: req.StudentNo, Role: "student", Action: "login",
-			Status: http.StatusTooManyRequests, IP: ip, Detail: "rate limited"})
-		writeError(w, http.StatusTooManyRequests, "too_many_attempts", "too many failed login attempts", map[string]any{
-			"retry_after": retry,
-		})
-		return
-	}
+	accountKey := "user:" + ip + "|" + req.StudentNo
+	ipKey := "ip:" + ip
+
+	// 先校验凭据：凭据正确时不受限流影响，避免一个考生输错把整间教室（或
+	// 自己的正确重登）锁死。只有失败请求才计入并可能被 429。
 	st, err := s.st.Authenticate(r.Context(), req.StudentNo, req.Token)
 	if err != nil {
-		s.loginLimiter.fail(limitKeys...)
+		if ok, wait := s.loginLimiter.check(accountKey); !ok {
+			s.writeRateLimited(w, r, req.StudentNo, ip, wait)
+			return
+		}
+		if ok, wait := s.ipLimiter.check(ipKey); !ok {
+			s.writeRateLimited(w, r, req.StudentNo, ip, wait)
+			return
+		}
+		s.loginLimiter.fail(accountKey)
+		s.ipLimiter.fail(ipKey)
 		s.st.Audit(r.Context(), store.AuditRecord{StudentNo: req.StudentNo, Role: "student", Action: "login",
 			Status: http.StatusUnauthorized, IP: ip})
 		writeError(w, http.StatusUnauthorized, "bad_credentials", "invalid student_no or token", nil)
 		return
 	}
-	s.loginLimiter.reset(limitKeys...)
+	s.loginLimiter.reset(accountKey)
+	s.ipLimiter.reset(ipKey)
 	sess, err := s.st.CreateSession(r.Context(), st.No, ip, s.cfg.SessionTTL)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error(), nil)
@@ -445,6 +458,17 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		"student_no": st.No,
 		"name":       st.Name,
 		"expires_at": sess.ExpiresAt,
+	})
+}
+
+// writeRateLimited 统一处理登录限流：带 Retry-After、审计一条 429。
+func (s *Server) writeRateLimited(w http.ResponseWriter, r *http.Request, studentNo, ip string, wait time.Duration) {
+	retry := int(wait.Seconds()) + 1
+	w.Header().Set("Retry-After", strconv.Itoa(retry))
+	s.st.Audit(r.Context(), store.AuditRecord{StudentNo: studentNo, Role: "student", Action: "login",
+		Status: http.StatusTooManyRequests, IP: ip, Detail: "rate limited"})
+	writeError(w, http.StatusTooManyRequests, "too_many_attempts", "too many failed login attempts", map[string]any{
+		"retry_after": retry,
 	})
 }
 
@@ -484,14 +508,6 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "ip_denied", "admin access is restricted to allowed networks", nil)
 		return
 	}
-	if ok, wait := s.loginLimiter.check("admin:" + s.clientIP(r)); !ok {
-		retry := int(wait.Seconds()) + 1
-		w.Header().Set("Retry-After", strconv.Itoa(retry))
-		writeError(w, http.StatusTooManyRequests, "too_many_attempts", "too many failed login attempts", map[string]any{
-			"retry_after": retry,
-		})
-		return
-	}
 	var req struct {
 		Token string `json:"token"`
 	}
@@ -501,6 +517,16 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.cfg.AdminToken == "" || !subtleEqual(req.Token, s.cfg.AdminToken) {
 		ip := s.clientIP(r)
+		if ok, wait := s.loginLimiter.check("admin:" + ip); !ok {
+			retry := int(wait.Seconds()) + 1
+			w.Header().Set("Retry-After", strconv.Itoa(retry))
+			s.st.Audit(r.Context(), store.AuditRecord{Role: "admin", Action: "admin_login",
+				Status: http.StatusTooManyRequests, IP: ip, Detail: "rate limited"})
+			writeError(w, http.StatusTooManyRequests, "too_many_attempts", "too many failed login attempts", map[string]any{
+				"retry_after": retry,
+			})
+			return
+		}
 		s.loginLimiter.fail("admin:" + ip)
 		s.st.Audit(r.Context(), store.AuditRecord{Role: "admin", Action: "admin_login",
 			Status: http.StatusUnauthorized, IP: ip})

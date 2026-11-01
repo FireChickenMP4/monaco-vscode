@@ -23,6 +23,9 @@ var (
 	ErrConflict    = errors.New("conflict")
 )
 
+// MaxAuditLimit 是单次审计查询/导出的硬上限。
+const MaxAuditLimit = 100000
+
 // Student 是一名考生账号。
 type Student struct {
 	No        string    `json:"student_no"`
@@ -358,8 +361,11 @@ func (s *Store) Audit(ctx context.Context, r AuditRecord) {
 
 // ListAudit 按考生（空表示全部）倒序列出审计记录。
 func (s *Store) ListAudit(ctx context.Context, studentNo string, limit int) ([]AuditRecord, error) {
-	if limit <= 0 || limit > 100000 {
+	if limit <= 0 {
 		limit = 200
+	}
+	if limit > MaxAuditLimit {
+		limit = MaxAuditLimit
 	}
 	var rows *sql.Rows
 	var err error

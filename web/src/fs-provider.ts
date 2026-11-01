@@ -29,6 +29,8 @@ export interface ProviderStatus {
 }
 
 interface PendingWrite {
+  /** 单调递增，flush 时据此判断条目是否仍是当初写的那个。 */
+  id: number
   path: string
   /** base64，便于 localStorage 持久化 */
   content: string
@@ -74,6 +76,8 @@ function toProviderError(err: unknown): Error {
 }
 
 export interface ProviderOptions {
+  /** 当前登录学号：本地缓冲按学号隔离，换人登录不会串卷。 */
+  studentNo: string
   onConflict?: (path: string) => void
   onUnauthorized?: () => void
 }
@@ -96,6 +100,7 @@ export class RemoteFileSystemProvider implements IFileSystemProviderWithFileRead
   private readonly contents = new Map<string, Uint8Array>()
   private readonly dirs = new Map<string, [string, FileType][]>()
   private pending: PendingWrite[] = []
+  private nextPendingId = 1
   private flushing = false
   private listeners = new Set<(status: ProviderStatus) => void>()
   private status: ProviderStatus = {
@@ -106,7 +111,7 @@ export class RemoteFileSystemProvider implements IFileSystemProviderWithFileRead
     lastSavedAt: null
   }
 
-  constructor(private readonly options: ProviderOptions = {}) {
+  constructor(private readonly options: ProviderOptions) {
     this.loadPending()
     if (typeof window !== 'undefined') {
       window.addEventListener('online', () => {
@@ -138,12 +143,27 @@ export class RemoteFileSystemProvider implements IFileSystemProviderWithFileRead
     for (const listener of this.listeners) listener(this.statusSnapshot())
   }
 
+  private storageKey(): string {
+    return `${PENDING_KEY}:${this.options.studentNo}`
+  }
+
   private loadPending(): void {
+    // v1 没有按学号隔离，直接丢弃，避免把上一位考生的内容写进新工作区。
     try {
-      const raw = localStorage.getItem(PENDING_KEY)
+      localStorage.removeItem(PENDING_KEY)
+    } catch {
+      // 忽略
+    }
+    try {
+      const raw = localStorage.getItem(this.storageKey())
       if (!raw) return
       const parsed = JSON.parse(raw) as PendingWrite[]
-      if (Array.isArray(parsed)) this.pending = parsed
+      if (!Array.isArray(parsed)) return
+      for (const item of parsed) {
+        if (typeof item?.id !== 'number') item.id = this.nextPendingId++
+        if (item.id >= this.nextPendingId) this.nextPendingId = item.id + 1
+      }
+      this.pending = parsed
     } catch {
       this.pending = []
     }
@@ -152,8 +172,8 @@ export class RemoteFileSystemProvider implements IFileSystemProviderWithFileRead
 
   private persistPending(): void {
     try {
-      if (this.pending.length === 0) localStorage.removeItem(PENDING_KEY)
-      else localStorage.setItem(PENDING_KEY, JSON.stringify(this.pending))
+      if (this.pending.length === 0) localStorage.removeItem(this.storageKey())
+      else localStorage.setItem(this.storageKey(), JSON.stringify(this.pending))
     } catch {
       // 配额不足时退化为内存缓冲，不影响本次会话。
     }
@@ -164,7 +184,7 @@ export class RemoteFileSystemProvider implements IFileSystemProviderWithFileRead
     this.contents.set(path, content)
     this.stats.set(path, { type: FileType.File, size: content.length })
     const existing = this.pending.findIndex((p) => p.path === path)
-    const item: PendingWrite = { path, content: encoded, baseEtag, ts: Date.now() }
+    const item: PendingWrite = { id: this.nextPendingId++, path, content: encoded, baseEtag, ts: Date.now() }
     if (existing >= 0) {
       item.baseEtag = this.pending[existing].baseEtag ?? baseEtag
       this.pending[existing] = item
@@ -191,6 +211,15 @@ export class RemoteFileSystemProvider implements IFileSystemProviderWithFileRead
     }
   }
 
+  /** 只删除 id 仍然匹配的条目；条目已被更新的写入替换时返回 false。 */
+  private removePending(id: number): boolean {
+    const index = this.pending.findIndex((p) => p.id === id)
+    if (index < 0) return false
+    this.pending.splice(index, 1)
+    this.persistPending()
+    return true
+  }
+
   /** 重连后把本地缓冲按顺序写回服务端。 */
   async flushPending(): Promise<void> {
     if (this.flushing || this.pending.length === 0) return
@@ -202,10 +231,12 @@ export class RemoteFileSystemProvider implements IFileSystemProviderWithFileRead
         try {
           const entry = await api.write(item.path, content, item.baseEtag ?? '*')
           this.etags.set(item.path, entry.etag ?? '')
-          this.markWritten(item.path, content)
-          this.pending.shift()
-          this.persistPending()
-          this.update({ lastSavedAt: Date.now(), lastError: null, online: true })
+          // 只有条目仍是写出去的那一份时才更新缓存并删除；否则说明写回期间
+          // 编辑器又保存了新内容，保留新条目交给下一轮 flush。
+          if (this.removePending(item.id)) {
+            this.markWritten(item.path, content)
+            this.update({ lastSavedAt: Date.now(), lastError: null, online: true })
+          }
         } catch (err) {
           if (err instanceof ApiError && err.status === 401) {
             this.update({ lastError: '会话已过期，等待重新登录' })
@@ -219,10 +250,10 @@ export class RemoteFileSystemProvider implements IFileSystemProviderWithFileRead
             try {
               const entry = await api.write(item.path, content, err.currentEtag)
               this.etags.set(item.path, entry.etag ?? '')
-              this.markWritten(item.path, content)
-              this.pending.shift()
-              this.persistPending()
-              this.update({ lastSavedAt: Date.now(), lastError: null })
+              if (this.removePending(item.id)) {
+                this.markWritten(item.path, content)
+                this.update({ lastSavedAt: Date.now(), lastError: null })
+              }
               continue
             } catch (retryErr) {
               this.update({ lastError: describe(retryErr) })

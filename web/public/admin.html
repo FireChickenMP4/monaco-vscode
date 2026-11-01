@@ -376,7 +376,12 @@
       $('audit-export').addEventListener('click', () => {
         const student = $('audit-student').value.trim()
         const query = student ? `?student=${encodeURIComponent(student)}` : ''
-        window.open(`/api/admin/audit.csv${query}`, '_blank')
+        const link = document.createElement('a')
+        link.href = `/api/admin/audit.csv${query}`
+        link.download = 'audit.csv'
+        document.body.appendChild(link)
+        link.click()
+        link.remove()
       })
       $('judge-load').addEventListener('click', () => loadJudgeRuns().catch((e) => alert(e.message)))
       $('judge-submit').addEventListener('click', async () => {

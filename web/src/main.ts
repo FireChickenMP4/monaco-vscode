@@ -97,8 +97,33 @@ function showLogin(message?: string): Promise<{ student_no: string; name: string
       </form>`
     const form = loginRoot.querySelector('form') as HTMLFormElement
     const error = loginRoot.querySelector('#exam-login-error') as HTMLParagraphElement
+    const submit = form.querySelector('button[type="submit"]') as HTMLButtonElement
+    let cooldownTimer: number | undefined
+
+    function startCooldown(seconds: number): void {
+      let left = Math.max(1, Math.ceil(seconds))
+      if (cooldownTimer !== undefined) window.clearInterval(cooldownTimer)
+      submit.disabled = true
+      const tick = (): void => {
+        error.textContent = `登录尝试过多，请 ${left} 秒后重试`
+        setBanner('登录被限流，请稍候', 'warn')
+        if (left <= 1) {
+          window.clearInterval(cooldownTimer)
+          cooldownTimer = undefined
+          submit.disabled = false
+          error.textContent = ''
+          setBanner('可以重新登录了', 'busy')
+          return
+        }
+        left--
+      }
+      tick()
+      if (left > 1) cooldownTimer = window.setInterval(tick, 1000)
+    }
+
     form.addEventListener('submit', (ev) => {
       ev.preventDefault()
+      if (submit.disabled) return
       const data = new FormData(form)
       const studentNo = String(data.get('student_no') ?? '').trim()
       const token = String(data.get('token') ?? '').trim()
@@ -106,14 +131,23 @@ function showLogin(message?: string): Promise<{ student_no: string; name: string
       setBanner('正在登录...', 'busy')
       api
         .login(studentNo, token)
-        .then(() => api.me())
-        .then((me) => {
+        // 用 /api/session 复核 Cookie 是否被浏览器接受（HTTP + Secure 时会被丢弃）。
+        .then(() => api.session())
+        .then((session) => {
+          if (!session.authenticated) {
+            throw new Error('登录成功但 Cookie 未被浏览器接受，请检查是否启用了 cookie-secure 但没有 HTTPS')
+          }
+          const me = { student_no: session.student_no, name: session.name }
           loginRoot.hidden = true
           updateUserLabel(me)
           resolve(me)
         })
         .catch((err: unknown) => {
-          error.textContent = err instanceof ApiError ? err.message : String(err)
+          if (err instanceof ApiError && err.status === 429) {
+            startCooldown(err.retryAfter ?? 30)
+            return
+          }
+          error.textContent = err instanceof Error ? err.message : String(err)
           setBanner('登录失败', 'error')
         })
     })
@@ -160,6 +194,11 @@ async function handleUnauthorized(currentProvider: RemoteFileSystemProvider): Pr
   try {
     setBanner('会话已过期，请重新登录（本地修改已缓存）', 'error')
     const me = await showLogin('会话已过期，请重新登录。本地未同步的修改会在登录后自动保存。')
+    if (me.student_no !== window.__exam.student) {
+      // 换人登录：缓冲按学号隔离，直接刷新页面重新初始化。
+      window.location.reload()
+      return
+    }
     updateUserLabel(me)
     setBanner('已重新登录，正在同步本地修改...', 'busy')
     await currentProvider.flushPending()
@@ -183,6 +222,7 @@ async function main(): Promise<void> {
 
   let notification: INotificationService | undefined
   const provider = new RemoteFileSystemProvider({
+    studentNo: me.student_no,
     onConflict: (path) => {
       window.__exam.lastConflict = path
       setBanner(`保存冲突：${path}`, 'warn')

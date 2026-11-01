@@ -20,7 +20,8 @@ export class ApiError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
-    readonly currentEtag?: string
+    readonly currentEtag?: string,
+    readonly retryAfter?: number
   ) {
     super(message)
     this.name = 'ApiError'
@@ -55,7 +56,8 @@ async function request(input: string, init?: RequestInit): Promise<Response> {
       res.status,
       typeof payload.code === 'string' ? payload.code : 'http_error',
       typeof payload.error === 'string' ? payload.error : res.statusText,
-      typeof payload.current_etag === 'string' ? payload.current_etag : undefined
+      typeof payload.current_etag === 'string' ? payload.current_etag : undefined,
+      typeof payload.retry_after === 'number' ? payload.retry_after : undefined
     )
   }
   return res

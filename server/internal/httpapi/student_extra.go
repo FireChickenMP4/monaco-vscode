@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"exam.local/monaco-examd/internal/store"
@@ -201,6 +202,10 @@ func (s *Server) handleAdminAudit(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
+	if limit > 1000 {
+		// 页面只需要最近若干条，避免一次拉 10 万条 JSON。
+		limit = 1000
+	}
 	list, err := s.st.ListAudit(r.Context(), studentNo, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error(), nil)
@@ -218,6 +223,9 @@ func (s *Server) handleAdminAuditCSV(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
+	if limit > store.MaxAuditLimit {
+		limit = store.MaxAuditLimit
+	}
 	list, err := s.st.ListAudit(r.Context(), studentNo, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error(), nil)
@@ -225,6 +233,11 @@ func (s *Server) handleAdminAuditCSV(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="audit.csv"`)
+	w.Header().Set("X-Row-Count", strconv.Itoa(len(list)))
+	if len(list) >= limit {
+		// 达到上限说明可能还有更早的记录，明确告知而不是静默截断。
+		w.Header().Set("X-Truncated", "true")
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF})
 	cw := csv.NewWriter(w)
@@ -233,16 +246,24 @@ func (s *Server) handleAdminAuditCSV(w http.ResponseWriter, r *http.Request) {
 		_ = cw.Write([]string{
 			strconv.FormatInt(a.ID, 10),
 			a.At.Format(time.RFC3339),
-			a.StudentNo,
-			a.Role,
-			a.Action,
-			a.Path,
+			csvCell(a.StudentNo),
+			csvCell(a.Role),
+			csvCell(a.Action),
+			csvCell(a.Path),
 			strconv.Itoa(a.Status),
-			a.IP,
-			a.Detail,
+			csvCell(a.IP),
+			csvCell(a.Detail),
 		})
 	}
 	cw.Flush()
+}
+
+// csvCell 防止以 = + - @ 开头的单元格被 Excel 当成公式执行。
+func csvCell(v string) string {
+	if v != "" && strings.ContainsRune("=+-@\t\r", rune(v[0])) {
+		return "'" + v
+	}
+	return v
 }
 
 func (s *Server) handleAdminSnapshots(w http.ResponseWriter, r *http.Request) {
