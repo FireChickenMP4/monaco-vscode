@@ -28,3 +28,8 @@
 *.tmp
 Thumbs.db
 .DS_Store
+
+# 本地环境变量
+.env
+.env.*
+!.env.example
